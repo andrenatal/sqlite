@@ -1,0 +1,682 @@
+#!/usr/bin/wapptclsh
+#
+# This is a WAPP script (https://wapp.tcl.tk) that implements a web-view
+# of althttpd log information on the https://sqlite.org server.  The script
+# is designed to be run as sub-CGI off of the https://sqlite.org/src Fossil
+# instance.  See https://fossil-scm.org/home/doc/trunk/www/serverext.wiki
+# for more information about sub-CGI scripts in Fossil.
+#
+# Though designed for use on sqlite.org, the script is *mostly* generic.
+# With minor edits, it can be adapted for use on other projects.
+#
+# Note that the SQLite website runs inside a chroot jail.  All pathnames
+# are relative to the root of that jail.
+#
+# RESTRICTED ACCESS:
+#
+# Users must have check-in permission on the host Fossil repository in order
+# for this script to run.  (Check-in permission is letter "i" in the
+# FOSSIL_CAPABILITIES CGI parameter.)  This prevents random passers-by
+# on the internet from extracting server status information, which could
+# potentially be used to inform an attack or for other nefarious activities.
+#
+# INSTALLATION:
+#
+#   *  Set up the hosting Fossil instance for sub-CGI in directory
+#      "/sqlite-src-ext" (or some other subdirectory of your choosing).
+#      This mean adding a single line in the https://sqlite.org/src
+#      CGI script that looks like this:
+#
+#           extroot: /sqlite-src-ext
+#
+#   *  Do a static build of "wapptclsh" and install it in /usr/bin.
+#      Note that this needs to be a full static build, since Fossil
+#      normally runs in a chroot jail.  Standard shared libraries will
+#      not be available.
+#
+#   *  Do a static build of "logtodb" from the althttpd project
+#      (https://sqlite.org/althttpd) and install that in /usr/bin too.
+#      This too must be fully static because of the chroot jail.
+#
+#   *  Arrange for the althttpd logs to appear in the file named
+#      "/logs/http.log".  If you are using a different logfile name,
+#      adjust this script accordingly.
+#
+#   *  Install this script in /sqlite-src-ext.  Make it executable so
+#      that it will be run as sub-CGI.
+#
+# For installations on other projects, make any minor adjustments to
+# pathnames that are hard-coded in this script and then deploy similarly
+# to the steps outlined above.
+#
+##############################################################################
+
+# If the user is not logged into an account that has check-in privilege
+# then redirect to the login page.
+#
+proc check-perms {} {
+  if {![string match *i* [wapp-param FOSSIL_CAPABILITIES]]} {
+    wapp-redirect [wapp-param FOSSIL_URI]/login
+  }
+}
+
+# Open the database for the log file.  Update it if necessary.
+#
+proc open-database {} {
+  sqlite3 db /logs/recent.db
+  if {[db one {SELECT name FROM sqlite_schema
+                WHERE name='log' AND sql LIKE '%date%'}]!="log" 
+    || [db one {SELECT max(date)<datetime('now','-5 minutes') FROM log}]
+  } {
+    exec /usr/bin/logtodb --db /logs/recent.db --logfile /logs/http.log \
+          --tail 60MB --keep 3600 --reset
+    db eval {
+       UPDATE log SET robot=1 WHERE ip IN (
+         SELECT ip FROM log WHERE lineno=2
+         EXCEPT
+         SELECT ip FROM log WHERE lineno=1
+       );
+    }
+  }
+}
+
+# Output an IP address as a hyperlink.
+#
+proc iplink {ip} {
+  wapp-trim {
+    <a href='https://www.geolocation.com/en_us?ip=%html($ip)'>%html($ip)</a>
+  }
+}
+
+# Show the WAPP environment, for debugging.
+#
+proc wapp-page-env {} {
+  check-perms
+  wapp-allow-xorigin-params
+  wapp-trim {
+    <div class='fossil-doc' data-title='Wapp Environment'>
+    <pre>%html([wapp-debug-env])</pre>
+  }
+}
+
+# Show the version number for the logtodb executable
+# for debugging.
+#
+proc wapp-page-version {} {
+  check-perms
+  set vers [exec /usr/bin/logtodb --version]
+  wapp-trim {
+    <div class='fossil-doc' data-title='LogToDB Version Information'>
+    <pre>%html($vers)</pre>
+  }
+}
+
+proc traffic-by-domain {} {
+  wapp-trim {
+    <h2>Traffic By Domain</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Domain <th>IPs <th>hits <th>I/O <th>CGIs <th>robots
+  }
+  db eval {
+    SELECT * FROM (
+    SELECT coalesce(substr(domain,1,24),'NULL') as 'domain',
+           format('%,d',count(distinct ip)) AS IPs,
+           format('%,d',count(*)) AS hits,
+           format('%,d',sum(nin+nout)) AS io,
+           format('%.2f%%',count(CASE WHEN cgi THEN 1 END)*100.0/count(*))
+             AS 'CGI',
+           format('%.2f%%',count(CASE WHEN robot THEN 1 END)*100.0/count(*))
+             AS 'robot'
+      FROM log
+     GROUP BY 1
+     ORDER BY count(*) DESC
+    ) UNION ALL SELECT * FROM (
+    SELECT 'TOTAL',
+           format('%,d',count(distinct ip)) AS IPs,
+           format('%,d',count(*)) AS hits,
+           format('%,d',sum(nin+nout)) AS io,
+           format('%.2f%%',count(CASE WHEN cgi THEN 1 END)*100.0/count(*))
+             AS 'CGI',
+           format('%.2f%%',count(CASE WHEN robot THEN 1 END)*100.0/count(*))
+             AS 'robot'
+      FROM log
+    )
+  } {
+     wapp-trim {
+       <tr>
+       <td>%html($domain)
+       <td align="right">%html($IPs)
+       <td align="right">%html($hits)
+       <td align="right">%html($io)
+       <td align="right">%html($CGI)
+       <td align="right">%html($robot)
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+}
+
+proc human-traffic-by-domain {} {
+  wapp-trim {
+    <h2>Human-Generated Traffic By Domain</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Domain <th>IPs <th>hits <th>I/O <th>CGIs
+  }
+  db eval {
+    SELECT * FROM (
+    SELECT coalesce(substr(domain,1,24),'NULL') as 'domain',
+           format('%,d',count(distinct ip)) AS IPs,
+           format('%,d',count(*)) AS hits,
+           format('%,d',sum(nin+nout)) AS io,
+           format('%.2f%%',count(CASE WHEN cgi THEN 1 END)*100.0/count(*))
+             AS 'CGI'
+      FROM log
+     WHERE NOT robot
+     GROUP BY 1
+     ORDER BY count(*) DESC
+    ) UNION ALL SELECT * FROM (
+    SELECT 'TOTAL',
+           format('%,d',count(distinct ip)) AS IPs,
+           format('%,d',count(*)) AS hits,
+           format('%,d',sum(nin+nout)) AS io,
+           format('%.2f%%',count(CASE WHEN cgi THEN 1 END)*100.0/count(*))
+             AS 'CGI'
+      FROM log
+     WHERE NOT robot
+    )
+  } {
+     wapp-trim {
+       <tr>
+       <td>%html($domain)
+       <td align="right">%html($IPs)
+       <td align="right">%html($hits)
+       <td align="right">%html($io)
+       <td align="right">%html($CGI)
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+}
+
+proc cpu-users {} {
+  set cnt 0
+  wapp-trim {
+    <h2>CPU Hogs</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>IP address <th>Hits <th>CPU seconds <th>Bandwidth <th>Robot
+  }
+  set ipx [wapp-param BASE_URL]/byip
+  db eval {
+    SELECT
+      ip,
+      count(*) as cnt,
+      format('%12.2f',sum(t1+t2+t3+t4)*0.000001) as secs,
+      format('%,d',sum(nin+nOut)) AS io,
+      sum(robot) AS isrobot
+      FROM log
+    GROUP BY ip
+    HAVING secs+0>1.0
+    ORDER BY 3 DESC
+    LIMIT 20;
+  } {
+     incr cnt
+     if {$isrobot>$cnt/2} {
+       set r {&#x2713;}
+     } else {
+       set r {}
+     }
+     wapp-trim {
+       <tr>
+       <td><a href='%html($ipx)?ip=%qp($ip)'>%html($ip)</a>
+       <td align="right">%html($cnt)
+       <td align="right">%html($secs)
+       <td align="right">%html($io)
+       <td align="center">%unsafe($r)
+    }
+  }
+  if {$cnt==0} {
+    wapp-trim {
+      <tr><td colspan=5><i>None</i>
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+}
+
+proc high-bandwidth {} {
+  wapp-trim {
+    <h2>High-Bandwidth Requests</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Hits <th>IPs <th>I/O <th>URL
+  }
+  db eval {
+    SELECT
+        format('%,d',count(*)) AS cnt,
+        format('%,d',count(DISTINCT ip)) AS ips,
+        format('%,d',sum(nin+nout)) AS io,
+        url
+      FROM log
+      GROUP BY url
+      ORDER BY sum(nin+nout) DESC
+    LIMIT 25;
+  } {
+     wapp-trim {
+       <tr>
+       <td align="right">%html($cnt)
+       <td align="right">%html($ips)
+       <td align="right">%html($io)
+       <td>%html($url)
+    }
+  }
+  if {$cnt==0} {
+    wapp-trim {
+      <tr><td colspan=3><i>None</i>
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+}
+
+proc most-hits {} {
+  wapp-trim {
+    <h2>Most Common Requests (Excluding CSS and Images)</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Hits <th>IPs <th>Domain <th>Name  <th>Robot
+  }
+  set base [wapp-param BASE_URL]/byuri
+  db eval {
+    SELECT
+        format('%,d',count(*)) AS cnt,
+        format('%,d',count(DISTINCT ip)) AS ips,
+        format('%.1f%%',avg(robot)*100.0) AS rbt,
+        domain, scriptname
+      FROM log
+      WHERE scriptname NOT GLOB '/images/*'
+        AND scriptname NOT LIKE '%.css'
+        AND scriptname NOT GLOB '*favicon.ico*'
+        AND scriptname <> '/robots.txt'
+      GROUP BY domain, scriptname
+      ORDER BY count(*) DESC
+    LIMIT 25;
+  } {
+     wapp-trim {
+       <tr>
+       <td align="right">%html($cnt)
+       <td align="right">%html($ips)
+       <td>%html($domain)
+       <td><a href='%html($base)?s=%qp($scriptname)&d=%qp($domain)'>
+           %html($scriptname)</a>
+       <td align="right">%html($rbt)
+    }
+  }
+  if {$cnt==0} {
+    wapp-trim {
+      <tr><td colspan=4><i>None</i>
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+}
+
+proc robot-analysis {} {
+  set ctotal 0
+  set cbot 0
+  db eval {SELECT count(*) AS ctotal, sum(lineno=2) AS cbot FROM log} break
+  if {$cbot<0.01*$ctotal} return
+  set cpct [format %.1f%% [expr {$cbot*100.0/$ctotal}]]
+  set ncap [db one {SELECT count(*) FROM log WHERE lineno=1}]
+  wapp-trim {
+    <h2>Robot Stats</h2>
+    <p>
+    <ul>
+    <li> %html($cbot) out of %html($ctotal) requests (%html($cpct))
+         returned a captcha
+    <li> Successfully completed captchas: %html($ncap)
+  }
+  if {$ncap>0} {
+    set link [wapp-param BASE_URL]/captchaok
+    wapp-trim { &nbsp;<a href="%html($link)">(details)</a>}
+  }
+  db eval {SELECT sum(robot is true) as nbot FROM log} break
+  set npct [format %.1f%% [expr {$nbot*100.0/$ctotal}]]
+  wapp-trim {
+    <li> %html($nbot) out of %html($ctotal) requests (%html($npct))
+         where from robots.
+  }
+  set nip [db one {SELECT count(DISTINCT ip) FROM log}]
+  set nrobotip [db one {SELECT count(DISTINCT ip) FROM log WHERE robot}]
+  wapp-trim {
+    <li> %html($nrobotip) out of %html($nip) distinct IP addresses are robots.
+  }
+  db eval {SELECT round(sum(nIn+nOut)/1000000.0,1) AS ios,
+                  round(sum(t1+t2+t3+t4)/1000000.0,1) AS tm FROM log} break
+  db eval {SELECT round(sum(nIn+nOut)/1000000.0,1) AS rios,
+                  round(sum(t1+t2+t3+t4)/1000000.0,1) AS rtm FROM log
+            WHERE robot} break
+  set iospct [format %.1f%% [expr {$rios*100.0/$ios}]]
+  set tmpct [format %.1f%% [expr {$rtm*100.0/$tm}]]
+  wapp-trim {
+    <li> %html($rios)MB out of %html($ios)MB bandwidth (%html($iospct))
+         is due to robots
+    <li> %html($rtm) out of %html($tm) seconds of CPU (%html($tmpct))
+         is dealing with robots
+  }
+
+  wapp-trim {</ul>}
+}
+
+# This page shows the sequence of URLs before and after a successful
+# captcha.
+#
+proc wapp-page-captchaok {} {
+  check-perms
+  open-database
+  wapp-trim {
+    <div class='fossil-doc' data-title='Successful Captchas'>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+  }
+  set previp {}
+  set prevagent {}
+  set atx [wapp-param BASE_URL]/attime
+
+  db eval {
+    SELECT date, substr(date,-8) AS tm, ip, code, lineno, url, agent
+      FROM log
+     WHERE (ip,agent) IN (SELECT ip, agent FROM log WHERE lineno=1)
+     ORDER BY ip, date
+  } {
+    if {$ip!=$previp || $agent!=$prevagent} {
+      wapp-trim {
+        <tr><td colspan="4" align="center">
+            <b>
+      }
+      iplink $ip
+      wapp-trim {
+        </b><br><small>%html($agent)</small>
+        </td></tr>
+        <tr><th>Time <th>Code <th>Ln <th>URL</tr>
+      }
+      set previp $ip
+      set prevagent $agent
+    }
+    wapp-trim {
+      <tr><td><a href='%html($atx)?d=%qp($date)&ip=%qp($ip)'>%html($tm)</a>
+          <td>%html($code)<td>%html($lineno)
+          <td>%html($url)</tr>
+    }
+  }
+  wapp-trim {
+    </table>
+    </div>
+  }
+  db close  
+}
+
+proc wapp-default {} {
+  check-perms
+  open-database
+  wapp-trim {
+    <div class='fossil-doc' data-title='Recent Server Activity'>
+  }
+  set first {}
+  set last {}
+  set seconds 1
+  db eval {
+    SELECT min(date) AS first, max(date) AS last,
+           unixepoch(max(date))-unixepoch(min(date)) AS seconds
+      FROM log
+  } break;
+  wapp-trim {
+    <h2>Period Of Analysis</h2>
+    <p>
+    <ul>
+    <li> Start time: %html%($first)%
+    <li> End time: %html%($last)%
+    <li> Duration: %html%([format %.1f [expr {$seconds/60.0}]])% minutes
+    </ul>
+  }
+  traffic-by-domain
+  robot-analysis
+  human-traffic-by-domain
+  cpu-users
+  high-bandwidth
+  most-hits
+  db close
+}
+
+proc wapp-page-byuri {} {
+  check-perms
+  set d [wapp-param d]
+  set s [wapp-param s]
+  open-database
+  wapp-trim {
+    <div class='fossil-doc' data-title='Recent Server Activity'>
+    <h2>Log Of Requests For http://%html($d)%html%($s)%</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Time <th>IP <th>URL tail <th>Robot
+  }
+  set base [wapp-param BASE_URL]
+  set ipx $base/byip
+  set atx $base/attime
+  set self $base/byuri
+  set n 0
+  if {[wapp-param-exists all]} {
+    set limit 1000000000
+    set offset 0
+  } else {
+    set limit 200
+    set offset [wapp-param offset]
+    if {![string is integer -strict $offset] || $offset<=0} {
+      set offset 0
+    } else {
+      set p [expr {$offset-$limit}]
+      if {$p<0} {$p=0}
+      wapp-trim {
+        <tr><td colspan="4" align="center">
+        <a href='%html($self)?d=%html($d)&s=%html($s)&offset=%html($p)'>
+        Earlier entries</a>&nbsp;&nbsp;|&nbsp;&nbsp;
+        <a href='%html($self)?d=%html($d)&s=%html($s)&all'>All Entries</a>
+      }
+    }
+  }
+
+  db eval {
+    SELECT
+        substr(date,12) AS time,
+        ip,
+        substr(url,uriofst+length(scriptname)) AS url,
+        robot
+      FROM log
+      WHERE domain=$d AND scriptname=$s
+      ORDER BY time
+      LIMIT -1 OFFSET $offset
+  } {
+    if {$n>=$limit} {
+      set nx [expr {$offset+$limit}]
+      wapp-trim {
+        <tr><td colspan="4" align="center">
+        <a href='%html($self)?d=%html($d)&s=%html($s)&offset=%html($nx)'>
+        Later entries</a> &nbsp;&nbsp; | &nbsp;&nbsp;
+        <a href='%html($self)?ip=%html($ip)&all'>
+        All entries</a>
+      }
+      break;
+    }
+    if {$robot} {
+      set r {&#x2713;}
+    } else {
+      set r {}
+    }
+    wapp-trim {
+       <tr>
+       <td>%html($time)
+       <td><a href='%html($ipx)?ip=%qp($ip)'>%html($ip)</a>
+       <td>%html($url)
+       <td align="center">%unsafe($r)
+    }
+    incr n
+  }
+  wapp-trim {
+    </table>
+  }
+  db close
+}
+
+proc wapp-page-byip {} {
+  check-perms
+  set ip [wapp-param ip]
+  open-database
+  wapp-trim {
+    <div class='fossil-doc' data-title='Recent Server Activity'>
+    <h2>Log Of Requests For IP address&#32;
+  }
+  iplink $ip
+  wapp-trim {</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Time <th>Result Code <th>URL
+  }
+  set base [wapp-param BASE_URL]
+  set atx $base/attime
+  set self $base/byip
+  set n 0
+  if {[wapp-param-exists all]} {
+    set limit 1000000000
+    set offset 0
+  } else {
+    set limit 200
+    set offset [wapp-param offset]
+    if {![string is integer -strict $offset] || $offset<=0} {
+      set offset 0
+    } else {
+      set p [expr {$offset-$limit}]
+      if {$p<0} {$p=0}
+      wapp-trim {
+        <tr><td colspan="3" align="center">
+        <a href='%html($self)?ip=%html($ip)&offset=%html($p)'>
+        Earlier entries</a>&nbsp;&nbsp;|&nbsp;&nbsp;
+        <a href='%html($self)?ip=%html($ip)&all'>All Entries</a>
+      }
+    }
+  }
+  db eval {
+    SELECT
+        substr(date,12) AS time,
+        code,
+        format('%s%s',domain,substr(url,uriofst)) AS url,
+        date
+      FROM log
+      WHERE ip=$ip
+      ORDER BY time
+      LIMIT -1 OFFSET $offset
+  } {
+    if {$n>=$limit} {
+      set nx [expr {$offset+$limit}]
+      wapp-trim {
+        <tr><td colspan="3" align="center">
+        <a href='%html($self)?ip=%html($ip)&offset=%html($nx)'>
+        Later entries</a> &nbsp;&nbsp; | &nbsp;&nbsp;
+        <a href='%html($self)?ip=%html($ip)&all'>
+        All entries</a>
+      }
+      break;
+    }
+    wapp-trim {
+      <tr>
+      <td><a href='%html($atx)?d=%qp($date)&ip=%qp($ip)'>%html($time)</a>
+      <td>%html($code)
+      <td>%html($url)
+    }
+    incr n
+  }
+  wapp-trim {
+    </table>
+    <h2>User Agents For IP address %html($ip)</h2>
+    <p>
+    <table border="1" cellpadding="3" cellspacing="0">
+    <tr>
+    <th>Count <th>User Agent
+  }
+  db eval {
+    SELECT
+        count(*) AS cnt,
+        agent
+      FROM log
+      WHERE ip=$ip
+      GROUP BY agent
+      ORDER BY 1 DESC
+  } {
+     wapp-trim {
+       <tr>
+       <td>%html($cnt)
+       <td>%html($agent)
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+  db close
+}
+
+
+proc wapp-page-attime {} {
+  check-perms
+  set d [wapp-param d]
+  set ip [wapp-param ip]
+  open-database
+  wapp-trim {
+    <div class='fossil-doc' data-title='Recent Server Activity'>
+    <h2>Requests from&#32;
+  }
+  iplink $ip
+  wapp-trim {
+    &#32;occurring at %html($d)</h2>
+    <p>
+    <table border="0" cellpadding="0" cellspacing="0">
+  }
+  set ipx [wapp-param BASE_URL]/byip
+  set cnt 0
+  db eval {
+    SELECT * FROM log WHERE date=$d AND ip=$ip
+  } x {
+    if {$cnt>0} {
+       wapp-trim {
+         <tr><td colspan="2"><hr>
+       }
+    }
+    incr cnt
+    foreach f $x(*) {
+      set val $x($f)
+      wapp-trim {
+        <tr>
+        <td valign="top" align="right"><b>%html($f):&nbsp;&nbsp;</b>
+        <td>%html%($val)%
+      }
+    }
+  }
+  wapp-trim {
+    </table>
+  }
+  db close
+}
+
+wapp-start $argv
