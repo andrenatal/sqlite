@@ -236,8 +236,8 @@ SQLITE_OPT.common := \
   -DSQLITE_C=$(sqlite3.c) \
   -DSQLITE_OMIT_DEPRECATED \
   -DSQLITE_OMIT_UTF16 \
-  -DSQLITE_OMIT_LOAD_EXTENSION \
   -DSQLITE_OMIT_SHARED_CACHE
+
 # ^^^ These particular OMITs are hard-coded in sqlite3-wasm.c and
 # removing them from this list will serve only to break the speedtest1
 # builds.
@@ -258,7 +258,9 @@ SQLITE_OPT.full-featured := \
   -DSQLITE_ENABLE_RTREE \
   -DSQLITE_ENABLE_SESSION \
   -DSQLITE_ENABLE_STMTVTAB \
-  -DSQLITE_ENABLE_UNKNOWN_SQL_FUNCTION
+  -DSQLITE_ENABLE_UNKNOWN_SQL_FUNCTION \
+  -Dlm
+
 
 ifeq (0,$(wasm-bare-bones))
   # The so-called canonical build is full-featured:
@@ -423,9 +425,10 @@ DISTCLEAN_FILES += $(bin.mkwb)
 bin.c-pp := ./c-pp
 $(bin.c-pp): c-pp.c $(sqlite3.c) $(MAKEFILE)
 	$(CC) -O0 -o $@ c-pp.c $(sqlite3.c) '-DCMPP_DEFAULT_DELIM="//#"' -I$(dir.top) \
-		-DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_UTF16 \
+    -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_UTF16 \
 		-DSQLITE_OMIT_SHARED_CACHE -DSQLITE_OMIT_WAL -DSQLITE_THREADSAFE=0 \
-		-DSQLITE_TEMP_STORE=3
+		-DSQLITE_TEMP_STORE=3 \
+    -DSQLITE_EXTRA_INIT=core_init -lm
 DISTCLEAN_FILES += $(bin.c-pp)
 C-PP.FILTER.global ?=
 ifeq (1,$(SQLITE_C_IS_SEE))

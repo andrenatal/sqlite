@@ -97,8 +97,10 @@
 /* SQLITE_O... */
 #undef SQLITE_OMIT_DEPRECATED
 #define SQLITE_OMIT_DEPRECATED 1
+/*
 #undef SQLITE_OMIT_LOAD_EXTENSION
 #define SQLITE_OMIT_LOAD_EXTENSION 1
+*/
 #undef SQLITE_OMIT_SHARED_CACHE
 #define SQLITE_OMIT_SHARED_CACHE 1
 #undef SQLITE_OMIT_UTF16
@@ -119,6 +121,10 @@
 #endif
 #ifndef SQLITE_THREADSAFE
 # define SQLITE_THREADSAFE 0
+#endif
+
+#ifndef SQLITE_EXTRA_INIT
+# define SQLITE_EXTRA_INIT core_init
 #endif
 
 /**********************************************************************/
