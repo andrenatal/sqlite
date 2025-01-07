@@ -1195,3 +1195,9 @@ int sqlite3_ndvss_init( sqlite3 *db,
   return rc;
 }
 
+int core_init(const char *unused) {
+  int nErr = 0;
+  // Register the extension’s init function to auto-load for every new connection
+  nErr +=  sqlite3_auto_extension((void*)sqlite3_ndvss_init);
+  return nErr ? SQLITE_ERROR : SQLITE_OK;
+}
