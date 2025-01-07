@@ -13,9 +13,3 @@ make sqlite3.c
 cat sqlite-ndvss/sqlite-ndvss.c >> sqlite3.c
 cd ext/wasm/
 make
-
-cd althttpd
-make althttpd
-cd ../
-cd ext/wasm/
-../../althttpd/althttpd --enable-sab --max-age 1
