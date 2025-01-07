@@ -402,7 +402,7 @@ static void ndvss_cosine_similarity_f( sqlite3_context* context,
     similarity += (A*B);
     dividerA += (A*A);
     dividerB += (B*B);
-    /**/
+    **/
   }
   //#pragma GCC ivdep
   #endif
