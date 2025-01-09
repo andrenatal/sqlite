@@ -26,7 +26,11 @@ case, perhaps make minor changes to the procedure such as:
   *  Also compile "wish" to go with each "tclsh".
 
 
+<a id="unix"></a>
 ## 2.0 Testing On Unix-like Systems (Including Mac)
+
+See also the [](./compile-for-unix.md) document which provides another
+perspective on how to compile SQLite on unix-like systems.
 
 ###  2.1 Setup
 
@@ -84,8 +88,14 @@ case, perhaps make minor changes to the procedure such as:
       when using this Tcl build.
 <li>  `make install`
 <li>  `cp -r ../library $TCLBUILD/tcl90/lib/tcl9.0` <br>
-      &uarr; The Tcl library is not installed in the expected place by
-      "make install" in Tcl9.0.  This step is not required when building Tcl8.6.
+      &uarr; The Tcl library is not installed by "make install" for Tcl9.0 unless
+      you also include the --disable-zipfs to ./configure.  But if you do that
+      then the generated tclsh9.0 is no longer stand-alone.  On the other hand,
+      if you don't install the Tcl library, other programs like testfixture
+      won't be able to find the Tcl library and hence won't work.  This
+      extra installation step resolves the dilemma.
+      This step is not required when building Tcl8.6, which lacks support for
+      zipfs and hence always installs its Tcl library.
 <li> `cd $SQLITESOURCE`
 <li> `fossil clean -x`
 <li> `./configure --with-tclsh=$TCLBUILD/tcl90/bin/tclsh9.0 --all`
@@ -105,7 +115,11 @@ case, perhaps make minor changes to the procedure such as:
 <li value="29"> `rm -rf $TCLBUILD`
 </ol>
 
+<a id="windows"></a>
 ## 3.0 Testing On Windows
+
+See also the [](./compile-for-windows.md) document which provides another
+perspective on how to compile SQLite on Windows.
 
 ###  3.1 Setup for Windows
 
